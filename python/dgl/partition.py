@@ -9,7 +9,7 @@ from . import utils
 from .base import EID, NID
 
 __all__ = ["metis_partition", "metis_partition_assignment",
-           "partition_graph_with_halo"]
+           "partition_graph_with_halo", "part_graph_with_halo", "shuffle_graph_with_halo"]
 
 
 def reorder_nodes(g, new_node_ids):
@@ -139,6 +139,70 @@ def partition_graph_with_halo(g, node_part, extra_cached_hops, reshuffle=False):
         subg.edata['inner_edge'] = inner_edge
         subg_dict[i] = subg
     print('Construct subgraphs: {:.3f} seconds'.format(time.time() - start))
+    return subg_dict
+
+def shuffle_graph_with_halo(g, node_part):
+    assert len(node_part) == g.number_of_nodes()
+    node_part = utils.toindex(node_part)
+    start = time.time()
+    node_part = node_part.tousertensor()
+    sorted_part, new2old_map = F.sort_1d(node_part)
+    new_node_ids = np.zeros((g.number_of_nodes(),), dtype=np.int64)
+    new_node_ids[F.asnumpy(new2old_map)] = np.arange(
+    0, g.number_of_nodes())
+    g = reorder_nodes(g, new_node_ids)
+    node_part = utils.toindex(sorted_part)
+    # We reassign edges in in-CSR. In this way, after partitioning, we can ensure
+    # that all edges in a partition are in the contiguous Id space.
+    orig_eids = _CAPI_DGLReassignEdges_Hetero(g._graph, True)
+    orig_eids = utils.toindex(orig_eids)
+    orig_eids = orig_eids.tousertensor()
+    orig_nids = g.ndata['orig_id']
+    print('Reshuffle nodes and edges: {:.3f} seconds'.format(time.time() - start))
+    return g, orig_nids, orig_eids
+
+def part_graph_with_halo(g, node_part, partition_id, extra_cached_hops, orig_nids=None, orig_eids=None, reshuffle=False):
+    start = time.time()
+    node_part = utils.toindex(node_part)
+    node_part = node_part.tousertensor()
+    sorted_part, new2old_map = F.sort_1d(node_part)
+    node_part = utils.toindex(sorted_part)
+    subgs = _CAPI_DGLPartWithHalo_Hetero(
+        g._graph, node_part.todgltensor(), extra_cached_hops, partition_id)
+    print('Split partition {} : {:.3f} seconds'.format(partition_id, time.time() - start))
+    subg_dict = {}
+    node_part = node_part.tousertensor()
+    start = time.time()
+
+    # This creaets a subgraph from subgraphs returned from the CAPI above.
+    def create_subgraph_part(subg, induced_nodes, induced_edges):
+        subg1 = DGLHeteroGraph(gidx=subg.graph, ntypes=['_N'], etypes=['_E'])
+        subg1.ndata[NID] = induced_nodes[0]
+        subg1.edata[EID] = induced_edges[0]
+        return subg1
+
+    for i, subg in enumerate(subgs):
+        inner_node = _get_halo_heterosubgraph_inner_node(subg)
+        subg = create_subgraph_part(subg, subg.induced_nodes, subg.induced_edges)
+        inner_node = F.zerocopy_from_dlpack(inner_node.to_dlpack())
+        subg.ndata['inner_node'] = inner_node
+        subg.ndata['part_id'] = F.gather_row(node_part, subg.ndata[NID])
+        if reshuffle:
+            subg.ndata['orig_id'] = F.gather_row(orig_nids, subg.ndata[NID])
+            subg.edata['orig_id'] = F.gather_row(orig_eids, subg.edata[EID])
+        if extra_cached_hops >= 1:
+            inner_edge = F.zeros((subg.number_of_edges(),), F.int8, F.cpu())
+            inner_nids = F.nonzero_1d(subg.ndata['inner_node'])
+            # TODO(zhengda) we need to fix utils.toindex() to avoid the dtype cast below.
+            inner_nids = F.astype(inner_nids, F.int64)
+            inner_eids = subg.in_edges(inner_nids, form='eid')
+            inner_edge = F.scatter_row(inner_edge, inner_eids,
+                                       F.ones((len(inner_eids),), F.dtype(inner_edge), F.cpu()))
+        else:
+            inner_edge = F.ones((subg.number_of_edges(),), F.int8, F.cpu())
+        subg.edata['inner_edge'] = inner_edge
+        subg_dict[i] = subg
+    print('Construct subgraph for partition {} : {:.3f} seconds'.format(partition_id, time.time() - start))
     return subg_dict
 
 

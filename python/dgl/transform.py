@@ -14,7 +14,9 @@ from . import backend as F
 from . import utils, batch
 from .partition import metis_partition_assignment
 from .partition import partition_graph_with_halo
+from .partition import part_graph_with_halo
 from .partition import metis_partition
+from .partition import shuffle_graph_with_halo
 
 # TO BE DEPRECATED
 from ._deprecate.graph import DGLGraph as DGLGraphStale
