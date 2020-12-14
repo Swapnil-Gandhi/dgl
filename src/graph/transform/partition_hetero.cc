@@ -220,7 +220,7 @@ DGL_REGISTER_GLOBAL("partition._CAPI_DGLPartitionWithHalo_Hetero")
     ugptr->GetInCSR();
     std::vector<std::shared_ptr<HaloHeteroSubgraph>> subgs(max_part_id + 1);
     int num_partitions = part_nodes.size();
-#pragma omp parallel for
+//#pragma omp parallel for
     for (int i = 0; i < num_partitions; i++) {
       auto nodes = aten::VecToIdArray(part_nodes[i]);
       HaloHeteroSubgraph subg = GetSubgraphWithHalo(hgptr, nodes, num_hops);

@@ -21,6 +21,14 @@ import torch.optim as optim
 import torch.multiprocessing as mp
 from torch.utils.data import DataLoader
 from pyinstrument import Profiler
+import sys
+
+import functools
+print = functools.partial(print, flush=True)
+
+#import pyprof
+#import torch.cuda.profiler as thProfiler
+#pyprof.init()
 
 def load_subtensor(g, seeds, input_nodes, device):
     """
@@ -39,15 +47,16 @@ class NeighborSampler(object):
 
     def sample_blocks(self, seeds):
         seeds = th.LongTensor(np.asarray(seeds))
+        blk = 0
         blocks = []
         for fanout in self.fanouts:
             # For each seed node, sample ``fanout`` neighbors.
-            frontier = self.sample_neighbors(self.g, seeds, fanout, replace=True)
+            frontier = self.sample_neighbors(self.g, seeds, fanout, replace=True, block=blk)
             # Then we compact the frontier into a bipartite graph for message passing.
             block = dgl.to_block(frontier, seeds)
             # Obtain the seed nodes for next layer.
             seeds = block.srcdata[dgl.NID]
-
+            blk= blk + 1
             blocks.insert(0, block)
 
         input_nodes = blocks[0].srcdata[dgl.NID]
@@ -71,6 +80,7 @@ class DistSAGE(nn.Module):
         self.layers.append(dglnn.SAGEConv(n_hidden, n_classes, 'mean'))
         self.dropout = nn.Dropout(dropout)
         self.activation = activation
+        #print("Number of layers %d " %len(self.layers))
 
     def forward(self, blocks, x):
         h = x
@@ -170,6 +180,7 @@ def run(args, device, data):
         drop_last=False)
 
     # Define model and optimizer
+    #print('in Features {}, Hidden layer size {}, Number of classes {}, Layers: {}'.format(in_feats, args.num_hidden, n_classes, args.num_layers))
     model = DistSAGE(in_feats, args.num_hidden, n_classes, args.num_layers, F.relu, args.dropout)
     model = model.to(device)
     if not args.standalone:
@@ -183,22 +194,26 @@ def run(args, device, data):
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     train_size = th.sum(g.ndata['train_mask'][0:g.number_of_nodes()])
-
+    #pb = g.get_partition_book()
     # Training loop
     iter_tput = []
     profiler = Profiler()
-    if args.close_profiler == False:
-        profiler.start()
+    profiler.start()
     epoch = 0
+    start_train=time.time()
+    train_time=0
+    #thProfiler.start()
     for epoch in range(args.num_epochs):
         tic = time.time()
 
         sample_time = 0
+        copy_time = 0
         forward_time = 0
         backward_time = 0
         update_time = 0
         num_seeds = 0
         num_inputs = 0
+        num_edges = 0
         start = time.time()
         # Loop over the dataloader to sample the computation dependency graph as a list of
         # blocks.
@@ -215,8 +230,21 @@ def run(args, device, data):
 
             num_seeds += len(blocks[-1].dstdata[dgl.NID])
             num_inputs += len(blocks[0].srcdata[dgl.NID])
+            #blk=args.num_layers
+            for block in blocks:
+                num_edges += len(block.edata[dgl.EID])
+                #blk = blk - 1
+                #print('Block {} | Epoch {} | Mini-Batch {} | SRC {} | EDGE {} | DST {}'.format(blk, epoch, step, len(block.srcdata[dgl.NID]), len(block.edata[dgl.EID]), len(block.dstdata[dgl.NID]) ))
+            #if epoch == 0 and step == 0 :
+                #local_nid = pb.partid2nids(pb.partid).detach().numpy()
+                #input_nid = blocks[0].srcdata[dgl.NID]
+                #print('Input {} Local {} '.format(len(input_nid), len(np.intersect1d(input_nid, local_nid))))
             blocks = [block.to(device) for block in blocks]
             batch_labels = batch_labels.to(device)
+            copy_time += time.time() - tic_step
+            #print("Going to sleep for 5 seconds...")
+            #time.sleep(5)
+
             # Compute loss and prediction
             start = time.time()
             batch_pred = model(blocks, batch_inputs)
@@ -233,42 +261,52 @@ def run(args, device, data):
 
             step_t = time.time() - tic_step
             step_time.append(step_t)
-            iter_tput.append(len(blocks[-1].dstdata[dgl.NID]) / step_t)
+            iter_tput.append(num_seeds / (step_t))
             if step % args.log_every == 0:
                 acc = compute_acc(batch_pred, batch_labels)
                 gpu_mem_alloc = th.cuda.max_memory_allocated() / 1000000 if th.cuda.is_available() else 0
-                print('Part {} | Epoch {:05d} | Step {:05d} | Loss {:.4f} | Train Acc {:.4f} | Speed (samples/sec) {:.4f} | GPU {:.1f} MB | time {:.3f} s'.format(
-                    g.rank(), epoch, step, loss.item(), acc.item(), np.mean(iter_tput[3:]), gpu_mem_alloc, np.sum(step_time[-args.log_every:])))
             start = time.time()
 
         toc = time.time()
-        print('Part {}, Epoch Time(s): {:.4f}, sample+data_copy: {:.4f}, forward: {:.4f}, backward: {:.4f}, update: {:.4f}, #seeds: {}, #inputs: {}'.format(
-            g.rank(), toc - tic, sample_time, forward_time, backward_time, update_time, num_seeds, num_inputs))
+        if epoch > 4:
+            print('Part {}, Epoch {}, Epoch Time(s): {:.4f}, sample: {:.4f}, data copy: {:.4f}, forward: {:.4f}, backward: {:.4f}, update: {:.4f}, #seeds: {}, #inputs: {}, #edges: {}'.format(
+            g.rank(), epoch, toc - tic, sample_time, copy_time, forward_time, backward_time, update_time, num_seeds, num_inputs, num_edges))
         epoch += 1
 
-
-        if epoch % args.eval_every == 0 and epoch != 0:
+        train_time += toc-tic
+        if epoch % args.eval_every == 0 and epoch > 199:
             start = time.time()
             val_acc, test_acc = evaluate(model.module, g, g.ndata['features'],
                                          g.ndata['labels'], val_nid, test_nid, args.batch_size_eval, device)
-            print('Part {}, Val Acc {:.4f}, Test Acc {:.4f}, time: {:.4f}'.format(g.rank(), val_acc, test_acc,
+            print('Epoch {}, Part {}, Val Acc {:.4f}, Test Acc {:.4f}, time: {:.4f}'.format(epoch, g.rank(), val_acc, test_acc,
                                                                                   time.time() - start))
-    if args.close_profiler == False:
-        profiler.stop()
-        print(profiler.output_text(unicode=True, color=True))
 
+    print("\n\n\nAverage time per epoch")
+    print(train_time/args.num_epochs)
+    print(time.time()-start_train)
+    print("\n\n\n")
+    profiler.stop()
+    #thProfiler.stop()
+    print(profiler.output_text(unicode=True, color=True))
 def main(args):
+    #if os.environ.get('DGL_ROLE', 'client') == 'server': #If Server process ?
+    #    sys.stdout = open("log_" + args.graph_name + "_server_" + str(os.environ.get('DGL_SERVER_ID')) + ".txt", "w")
+    tim=time.time()
     dgl.distributed.initialize(args.ip_config, args.num_servers, num_workers=args.num_workers)
     if not args.standalone:
-        th.distributed.init_process_group(backend='gloo')
+        th.distributed.init_process_group(backend='nccl')
     g = dgl.distributed.DistGraph(args.graph_name, part_config=args.part_config)
-    print('rank:', g.rank())
+    if os.environ.get('DGL_ROLE', 'client') == 'client': #If Client process ?
+        sys.stdout = open("log_" + args.graph_name + "_" + str(g.rank()) + ".txt", "w")
+    print('DGL Version ', dgl.__version__)
+    print('Rank:', g.rank())
 
     pb = g.get_partition_book()
     train_nid = dgl.distributed.node_split(g.ndata['train_mask'], pb, force_even=True)
     val_nid = dgl.distributed.node_split(g.ndata['val_mask'], pb, force_even=True)
     test_nid = dgl.distributed.node_split(g.ndata['test_mask'], pb, force_even=True)
     local_nid = pb.partid2nids(pb.partid).detach().numpy()
+    print('|V|={}, |E|={}'.format(g.number_of_nodes(), g.number_of_edges()))
     print('part {}, train: {} (local: {}), val: {} (local: {}), test: {} (local: {})'.format(
         g.rank(), len(train_nid), len(np.intersect1d(train_nid.numpy(), local_nid)),
         len(val_nid), len(np.intersect1d(val_nid.numpy(), local_nid)),
@@ -283,9 +321,12 @@ def main(args):
 
     # Pack data
     in_feats = g.ndata['features'].shape[1]
+    print('#Features', in_feats)
     data = train_nid, val_nid, test_nid, in_feats, n_classes, g
     run(args, device, data)
     print("parent ends")
+    print(tim-time.time())
+    sys.stdout.close()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='GCN')
@@ -297,12 +338,13 @@ if __name__ == '__main__':
     parser.add_argument('--num_clients', type=int, help='The number of clients')
     parser.add_argument('--num_servers', type=int, default=1, help='The number of servers')
     parser.add_argument('--n_classes', type=int, help='the number of classes')
-    parser.add_argument('--num_gpus', type=int, default=-1, 
+    parser.add_argument('--num_gpus', type=int, default=-1,
                         help="the number of GPU device. Use -1 for CPU training")
     parser.add_argument('--num_epochs', type=int, default=20)
     parser.add_argument('--num_hidden', type=int, default=16)
     parser.add_argument('--num_layers', type=int, default=2)
-    parser.add_argument('--fan_out', type=str, default='10,25')
+    #parser.add_argument('--fan_out', type=str, default='25,10')
+    parser.add_argument('--fan_out', type=str, default='-1,-1')
     parser.add_argument('--batch_size', type=int, default=1000)
     parser.add_argument('--batch_size_eval', type=int, default=100000)
     parser.add_argument('--log_every', type=int, default=20)
@@ -313,12 +355,9 @@ if __name__ == '__main__':
         help="Number of sampling processes. Use 0 for no extra process.")
     parser.add_argument('--local_rank', type=int, help='get rank of the process')
     parser.add_argument('--standalone', action='store_true', help='run in the standalone mode')
-    parser.add_argument('--close_profiler', action='store_true', help='Close pyinstrument profiler')
     args = parser.parse_args()
     assert args.num_workers == int(os.environ.get('DGL_NUM_SAMPLER')), \
-    'The num_workers should be the same value with DGL_NUM_SAMPLER.'
-    assert args.num_servers == int(os.environ.get('DGL_NUM_SERVER')), \
-    'The num_servers should be the same value with DGL_NUM_SERVER.'
+    'The num_workers should be the same value with num_samplers.'
 
     print(args)
     main(args)
