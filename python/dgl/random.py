@@ -1,6 +1,6 @@
 """Python interfaces to DGL random number generators."""
 import numpy as np
-
+import time
 from ._ffi.function import _init_api
 from . import backend as F
 from . import ndarray as nd
@@ -17,7 +17,7 @@ def seed(val):
     """
     _CAPI_SetSeed(val)
 
-def choice(a, size, replace=True, prob=None):  # pylint: disable=invalid-name
+def choice(a, size, replace=True, prob=None, seed_val=None):  # pylint: disable=invalid-name
     """An equivalent to :func:`numpy.random.choice`.
 
     Use this function if you:
@@ -73,8 +73,13 @@ def choice(a, size, replace=True, prob=None):  # pylint: disable=invalid-name
     else:
         prob = F.zerocopy_to_dgl_ndarray(prob)
 
+    if seed_val is not None:
+        seed(seed_val) 
+
     bits = 64  # index array is in 64-bit
+    start = time.time()
     chosen_idx = _CAPI_Choice(int(num), int(population), prob, bool(replace), bits)
+    print('Random partitioning: {:.3f} seconds'.format(time.time() - start))
     chosen_idx = F.zerocopy_from_dgl_ndarray(chosen_idx)
 
     if F.is_tensor(a):

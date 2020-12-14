@@ -57,6 +57,7 @@ DGL_REGISTER_GLOBAL("data.tensor_serialize._CAPI_LoadNDArrayDict")
     std::vector<NamedTensor> namedTensors;
     fs->Read(&namedTensors);
     for (auto kv : namedTensors) {
+      //LOG(INFO) << kv.first << " shape: " << kv.second.NumElements() << " size (bytes): " << kv.second.GetSize();
       Value ndarray = Value(MakeValue(kv.second));
       nd_dict.Set(kv.first, ndarray);
     }
