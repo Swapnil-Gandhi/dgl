@@ -790,10 +790,10 @@ def extract_node_subframes(graph, nodes, labels=None):
             are excluded
     '''
     if labels is not None:
-        for nf in list(node_frames):
-            for key in nf.keys():
-                if key not in labels:
-                    nf.pop(key)
+        for node_frame in node_frames:
+            for feat in list(node_frame.keys()):
+                if feat not in labels:
+                    node_frame.pop(feat)
     return node_frames
 
 def extract_node_subframes_for_block(graph, srcnodes, dstnodes):
