@@ -754,7 +754,7 @@ def relabel(x):
                                F.copy_to(F.arange(0, len(unique_x), dtype), ctx))
     return unique_x, old_to_new
 
-def extract_node_subframes(graph, nodes):
+def extract_node_subframes(graph, nodes, labels=None):
     """Extract node features of the given nodes from :attr:`graph`
     and return them in frames.
 
@@ -785,6 +785,15 @@ def extract_node_subframes(graph, nodes):
             subf = graph._node_frames[i].subframe(ind_nodes)
             subf[NID] = ind_nodes
             node_frames.append(subf)
+    '''
+        @swapnil : If labels is not None, all features except ones in labels
+            are excluded
+    '''
+    if labels is not None:
+        for nf in list(node_frames):
+            for key in nf.keys():
+                if key not in labels:
+                    nf.pop(key)
     return node_frames
 
 def extract_node_subframes_for_block(graph, srcnodes, dstnodes):
