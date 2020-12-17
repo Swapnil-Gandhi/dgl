@@ -51,13 +51,14 @@ class MultiLayerNeighborSampler(BlockSampler):
     ...      ('user', 'plays', 'game'): 4,
     ...      ('game', 'played-by', 'user'): 3}] * 3)
     """
-    def __init__(self, fanouts, replace=False, return_eids=False, copy_ndata=True, copy_edata=True):
+    def __init__(self, fanouts, replace=False, return_eids=False, copy_ndata=True, copy_edata=True, features_included=None):
         super().__init__(len(fanouts), return_eids)
 
         self.fanouts = fanouts
         self.replace = replace
         self.copy_ndata = copy_ndata
         self.copy_edata = copy_edata
+        self.features_included = features_included
 
     def sample_frontier(self, block_id, g, seed_nodes):
         fanout = self.fanouts[block_id]
@@ -82,7 +83,7 @@ class MultiLayerNeighborSampler(BlockSampler):
                         the original graph. If False, the new graph will not have any
                         node features.
                 '''
-                frontier = sampling.sample_neighbors(g, seed_nodes, fanout, replace=self.replace, copy_ndata=self.copy_ndata, copy_edata=self.copy_edata)
+                frontier = sampling.sample_neighbors(g, seed_nodes, fanout, replace=self.replace, copy_ndata=self.copy_ndata, copy_edata=self.copy_edata, features_included=self.features_included)
         return frontier
 
 class MultiLayerFullNeighborSampler(MultiLayerNeighborSampler):
