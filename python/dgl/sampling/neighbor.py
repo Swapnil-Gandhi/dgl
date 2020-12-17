@@ -12,7 +12,7 @@ __all__ = [
     'select_topk']
 
 def sample_neighbors(g, nodes, fanout, edge_dir='in', prob=None, replace=False,
-                     copy_ndata=True, copy_edata=True, _dist_training=False):
+                     copy_ndata=True, copy_edata=True, _dist_training=False, features_included=None):
     """Sample neighboring edges of the given nodes and return the induced subgraph.
 
     For each node, a number of inbound (or outbound when ``edge_dir == 'out'``) edges
@@ -162,7 +162,7 @@ def sample_neighbors(g, nodes, fanout, edge_dir='in', prob=None, replace=False,
     # only set the edge IDs.
     if not _dist_training:
         if copy_ndata:
-            node_frames = utils.extract_node_subframes(g, None)
+            node_frames = utils.extract_node_subframes(g, None, labels=features_included)
             utils.set_new_frames(ret, node_frames=node_frames)
 
         if copy_edata:
