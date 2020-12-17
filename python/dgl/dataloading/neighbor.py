@@ -51,11 +51,13 @@ class MultiLayerNeighborSampler(BlockSampler):
     ...      ('user', 'plays', 'game'): 4,
     ...      ('game', 'played-by', 'user'): 3}] * 3)
     """
-    def __init__(self, fanouts, replace=False, return_eids=False):
+    def __init__(self, fanouts, replace=False, return_eids=False, copy_ndata=True, copy_edata=True):
         super().__init__(len(fanouts), return_eids)
 
         self.fanouts = fanouts
         self.replace = replace
+        self.copy_ndata = copy_ndata
+        self.copy_edata = copy_edata
 
     def sample_frontier(self, block_id, g, seed_nodes):
         fanout = self.fanouts[block_id]
@@ -70,7 +72,17 @@ class MultiLayerNeighborSampler(BlockSampler):
             if fanout is None:
                 frontier = subgraph.in_subgraph(g, seed_nodes)
             else:
-                frontier = sampling.sample_neighbors(g, seed_nodes, fanout, replace=self.replace)
+                '''
+                    @Swapnil:  
+                               If copy_ndata is true, node features of the new graph are copied from
+                        the original graph. If False, the new graph will not have any
+                        node features.
+                        
+                               If copy_edata is true, node features of the new graph are copied from
+                        the original graph. If False, the new graph will not have any
+                        node features.
+                '''
+                frontier = sampling.sample_neighbors(g, seed_nodes, fanout, replace=self.replace, copy_ndata=self.copy_ndata, copy_edata=self.copy_edata)
         return frontier
 
 class MultiLayerFullNeighborSampler(MultiLayerNeighborSampler):
